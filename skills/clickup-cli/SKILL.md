@@ -1,6 +1,6 @@
 ---
 name: clickup
-description: 'Use when managing ClickUp tasks, sprints, or comments via the `cup` CLI tool. Triggers: task queries, status updates, sprint tracking, creating subtasks, posting comments, threaded replies, standup summaries, searching tasks, checking overdue items, assigning tasks, listing spaces and lists, opening tasks in browser, checking auth or config, setting custom fields, deleting tasks, managing tags, managing checklists, editing comments, task links, time tracking, attachments, file uploads, listing members, listing fields, duplicating tasks, bulk operations, goals, key results, saved filters, favorites.'
+description: 'Use when managing ClickUp tasks, sprints, or comments via the `cup` CLI tool. Use when authoring or updating a rich ClickUp task description (CUFM, markdown, Mermaid, tldraw, banners, toggles, tables, task-sync). Before writing a description, read references/cufm.md. Triggers: task queries, status updates, sprint tracking, creating subtasks, posting comments, threaded replies, standup summaries, searching tasks, checking overdue items, assigning tasks, listing spaces and lists, opening tasks in browser, checking auth or config, setting custom fields, deleting tasks, managing tags, managing checklists, editing comments, task links, time tracking, attachments, file uploads, listing members, listing fields, duplicating tasks, bulk operations, goals, key results, saved filters, favorites.'
 ---
 
 # ClickUp CLI (`cup`) - skill version 1.43.0
@@ -8,6 +8,18 @@ description: 'Use when managing ClickUp tasks, sprints, or comments via the `cup
 Reference for AI agents using the `cup` CLI tool. Covers task management, sprint tracking, comments, time tracking, custom fields, goals, docs, and project workflows.
 
 > **Version check:** Run `cup --version`. If your installed version is older than 1.43.0, update with `npm install -g @krodak/clickup-cli` and refresh this skill with `cup skill`.
+
+## Rich task descriptions (required)
+
+Before writing or updating a ClickUp **task description**, read **[references/cufm.md](references/cufm.md)** and write ClickUp Flavored Markdown (CUFM). `cup create`, `cup update`, and `cup task-sync push` compile it to native editor ops.
+
+```bash
+cup create -n "Title" -l <listId> --description-file /tmp/desc.md
+cup update <taskId> --description-file /tmp/desc.md
+cup task-sync push notes.md
+```
+
+Do **not** put rich markdown in inline `-d`. Do **not** use CUFM in comments (`cup comment` / `reply`) — those use a different converter.
 
 ## Install & Configure
 
@@ -147,6 +159,7 @@ All commands support `--help` for full flag details. All commands support `--jso
 | `cup view-tasks <viewId> [--me]`                                                                                                                                                                                                | List tasks in a view (`--me` filters to you)                                                                                                                 |
 | `cup open <query>`                                                                                                                                                                                                              | Open task in browser by ID or name                                                                                                                           |
 | `cup auth`                                                                                                                                                                                                                      | Check authentication status                                                                                                                                  |
+| `cup auth session [token]`                                                                                                                                                                                                      | Store the ClickUp session JWT for lossless task-sync pull and Synced Content                                                                                 |
 | `cup list-comments <listId>`                                                                                                                                                                                                    | Comments on a list                                                                                                                                           |
 | `cup view-comments <viewId>`                                                                                                                                                                                                    | Comments on a view                                                                                                                                           |
 | `cup webhook list`                                                                                                                                                                                                              | List webhooks in workspace                                                                                                                                   |
@@ -178,6 +191,11 @@ All commands support `--help` for full flag details. All commands support `--jso
 | `cup tag <id> [--add tags] [--remove tags]`                                                                                                                                                                                                                                                                                                            | Add/remove tags on a task                                                                                                                                                                                                      |
 | `cup link <taskId> <linksTo> [--remove]`                                                                                                                                                                                                                                                                                                               | Link/unlink tasks                                                                                                                                                                                                              |
 | `cup attach <taskId> <filePath>`                                                                                                                                                                                                                                                                                                                       | Upload file attachment                                                                                                                                                                                                         |
+| `cup task-sync init <taskId> [file]`                                                                                                                                                                                                                                                                                                                   | Pull a task into a local CUFM markdown file, or a directory of parent + subtasks if dest is a directory                                                                                                                        |
+| `cup task-sync push [file] [--session-token jwt]`                                                                                                                                                                                                                                                                                                      | Compile CUFM and push a file or directory of tasks/subtasks (images, Mermaid/tldraw, Synced Content, parent/subtask/dependency frontmatter)                                                                                    |
+| `cup task-sync pull [file] [--lossy]`                                                                                                                                                                                                                                                                                                                  | Pull a file or directory tree back; needs a session token (`cup auth session`) for lossless Quill, else `--lossy` to accept flattened markdown                                                                                 |
+| `cup task-sync status [file]`                                                                                                                                                                                                                                                                                                                          | Show local dirty / remote date_updated drift (directory = one line per file)                                                                                                                                                   |
+| `cup task-sync doctor (--list <listId> \| --task <taskId>) [-o file] [--delete]`                                                                                                                                                                                                                                                                       | Create (or with `--task`, overwrite) a full CUFM torture-test task (all color tokens, tables, Mermaid, tldraw, toggles) and print a sanity report                                                                              |
 | `cup delete <id> [--confirm]`                                                                                                                                                                                                                                                                                                                          | Delete task (DESTRUCTIVE)                                                                                                                                                                                                      |
 | `cup list-delete <listId> [--confirm]`                                                                                                                                                                                                                                                                                                                 | Delete list (DESTRUCTIVE, requires --confirm in non-interactive)                                                                                                                                                               |
 | `cup folder-delete <folderId> [--confirm]`                                                                                                                                                                                                                                                                                                             | Delete folder (DESTRUCTIVE, requires --confirm in non-interactive)                                                                                                                                                             |
@@ -311,7 +329,7 @@ When running in a terminal (not piped), task-listing commands (`cup tasks`, `cup
 - **Enter** to confirm and view details of selected tasks
 - After viewing details, prompted to open tasks in browser
 
-Other interactive prompts: sprint selection (when multiple match), workspace selection (`cup init`), agent selection (`cup skill`), destructive action confirmations (`cup delete`, `cup list-delete`, `cup folder-delete`, `cup space-delete`, `cup archive`, `cup view-delete`, `cup merge`, `cup webhook delete`).
+Other interactive prompts: sprint selection (when multiple match), workspace selection (`cup init`), skill install (`cup skill`, via `npx skills add`), destructive action confirmations (`cup delete`, `cup list-delete`, `cup folder-delete`, `cup space-delete`, `cup archive`, `cup view-delete`, `cup merge`, `cup webhook delete`).
 
 When piped or called with `--json`, all commands output non-interactive markdown or JSON. Agents should always use `--json` for structured data or pipe for markdown.
 
@@ -382,6 +400,12 @@ cup checklist edit-item <clId> <itemId> --resolved
 cup checklist edit-item <clId> <itemId> --parent <newParent>         # reparent (use "null" to unnest)
 cup link abc123 def456
 cup attach abc123def ./screenshot.png
+cup task-sync init abc123def task.md
+cup task-sync init abc123def ./tasks/    # parent + nested subtasks
+cup task-sync push ./tasks               # creates missing tasks parents-first, then deps
+cup task-sync pull ./tasks               # root = the file with no parent:
+cup task-sync status ./tasks
+cup task-sync doctor --list <listId> -o doctor.md
 cup time start abc123def -d "Working on feature"
 cup time stop
 cup time log abc123def 2h -d "Code review"
@@ -416,6 +440,8 @@ EOF
 ```
 
 Do **not** use `$'…team'\''s…\n\n## Goals'` — after the `'\''` apostrophe break the string is in normal single quotes, so `\n` is passed literally and headings/bullets render as `\n\n` text in ClickUp.
+
+`cup create` / `cup update` / `cup task-sync` compile task descriptions as ClickUp Flavored Markdown (CUFM). **Read [references/cufm.md](references/cufm.md) before writing a description** (`::toggle`, `::banner`, `::table`, `:badge`, mermaid, columns). Comments are not CUFM.
 
 ### Docs
 

@@ -1,6 +1,8 @@
 import { ClickUpClient } from '../api.js'
 import type { UpdateTaskOptions, Priority } from '../api.js'
 import type { Config } from '../config.js'
+import { updateSyncBlockContents } from '../task-sync/frontdoor.js'
+import { compileForTask, compilePlain, descriptionNeedsAssets } from '../cufm/publish.js'
 import { matchStatus } from '../status.js'
 
 const PRIORITY_MAP = {
@@ -193,7 +195,17 @@ export function buildUpdatePayload(
     if (!opts.name.trim()) throw new Error('Task name cannot be empty')
     payload.name = opts.name
   }
-  if (opts.description !== undefined) payload.markdown_content = opts.description
+  if (opts.description !== undefined) {
+    if (opts.description === '') payload.description = ''
+    else if (descriptionNeedsAssets(opts.description)) {
+      // Local images / mermaid need the task id to upload attachments; defer to updateTask.
+      payload.description_markdown = opts.description
+    } else {
+      const compiled = compilePlain(opts.description)
+      for (const w of compiled.warnings) console.error(`warning: ${w}`)
+      payload.description = { ops: compiled.ops }
+    }
+  }
   if (opts.status !== undefined) payload.status = opts.status
   if (opts.priority !== undefined) payload.priority = parsePriority(opts.priority)
   if (opts.dueDate !== undefined) {
@@ -248,6 +260,7 @@ function hasUpdateFields(options: UpdateTaskOptions): boolean {
   return (
     options.name !== undefined ||
     options.description !== undefined ||
+    options.description_markdown !== undefined ||
     options.markdown_content !== undefined ||
     options.status !== undefined ||
     options.priority !== undefined ||
@@ -311,7 +324,20 @@ export async function updateTask(
 
   const client = new ClickUpClient(config)
 
-  const resolved: UpdateTaskOptions = { ...options }
+  const { description_markdown: markdown, ...rest } = options
+  const resolved: UpdateTaskOptions = { ...rest }
+  if (markdown !== undefined) {
+    const compiled = await compileForTask({
+      markdown,
+      client,
+      taskId,
+      baseDir: process.cwd(),
+      media: {},
+    })
+    for (const w of compiled.warnings) console.error(`warning: ${w}`)
+    await updateSyncBlockContents(config, compiled.syncBlocks)
+    resolved.description = { ops: compiled.ops }
+  }
   if (resolved.status !== undefined) {
     resolved.status = await resolveStatus(client, taskId, resolved.status)
   }

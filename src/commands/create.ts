@@ -1,6 +1,8 @@
 import { ClickUpClient } from '../api.js'
 import type { CreateTaskOptions } from '../api.js'
 import type { Config } from '../config.js'
+import { compileForTask, compilePlain, descriptionNeedsAssets } from '../cufm/publish.js'
+import { updateSyncBlockContents } from '../task-sync/frontdoor.js'
 import { parsePriority, parseDueDate, parseAssigneeId, parseTimeEstimate } from './update.js'
 
 export interface CreateOptions {
@@ -57,9 +59,21 @@ export async function createTask(
 
   const payload: CreateTaskOptions = {
     name: options.name,
-    ...(options.description !== undefined ? { markdown_content: options.description } : {}),
     ...(parentId !== undefined ? { parent: parentId } : {}),
     ...(options.status !== undefined ? { status: options.status } : {}),
+  }
+
+  const needsAssets =
+    options.description !== undefined &&
+    options.description !== '' &&
+    descriptionNeedsAssets(options.description)
+  if (options.description !== undefined && !needsAssets) {
+    if (options.description === '') payload.description = ''
+    else {
+      const compiled = compilePlain(options.description)
+      for (const w of compiled.warnings) console.error(`warning: ${w}`)
+      payload.description = { ops: compiled.ops }
+    }
   }
 
   if (options.priority !== undefined) {
@@ -98,5 +112,17 @@ export async function createTask(
   }
 
   const task = await client.createTask(listId, payload)
+  if (needsAssets && options.description) {
+    const compiled = await compileForTask({
+      markdown: options.description,
+      client,
+      taskId: task.id,
+      baseDir: process.cwd(),
+      media: {},
+    })
+    for (const w of compiled.warnings) console.error(`warning: ${w}`)
+    await updateSyncBlockContents(config, compiled.syncBlocks)
+    await client.updateTask(task.id, { description: { ops: compiled.ops } })
+  }
   return { id: task.id, name: task.name, url: task.url }
 }

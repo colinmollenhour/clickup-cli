@@ -1,11 +1,14 @@
 import { realpathSync } from 'fs'
-import { basename, resolve } from 'path'
+import { basename, dirname, resolve } from 'path'
 import { Command } from 'commander'
 import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
 import { ClickUpClient } from './api.js'
 import {
   loadConfig,
+  loadRawConfig,
+  saveSessionToken,
+  clearSessionToken,
   addProfile,
   removeProfile,
   setDefaultProfile,
@@ -40,6 +43,15 @@ import { fetchLists, printLists } from './commands/lists.js'
 import { formatTaskDetail } from './interactive.js'
 import { isTTY, shouldOutputJson } from './output.js'
 import {
+  assertSessionTokenShape,
+  describeSessionToken,
+  formatRelativeExpiry,
+  resolveSessionToken,
+  sessionTokenExpiry,
+  SESSION_TOKEN_HELP,
+} from './session-token.js'
+import { formatDoctorReport } from './task-sync/doctor.js'
+import {
   formatTaskDetailMarkdown,
   formatUpdateConfirmation,
   formatCreateConfirmation,
@@ -61,7 +73,12 @@ import { assignTask } from './commands/assign.js'
 import { fetchActivity, printActivity } from './commands/activity.js'
 import { fetchTimeInStatus, printTimeInStatus } from './commands/time-in-status.js'
 import { generateCompletion } from './commands/completion.js'
-import { printSkill, installSkillInteractive, installSkillTo } from './commands/skill.js'
+import {
+  printSkill,
+  installSkillViaSkillsCli,
+  installSkillTo,
+  type SkillInstallOptions,
+} from './commands/skill.js'
 import { checkAuth } from './commands/auth.js'
 import { searchTasks, resolveSpaceNameToId } from './commands/search.js'
 import { manageDependency } from './commands/depend.js'
@@ -106,6 +123,13 @@ import {
 } from './commands/replies.js'
 import { manageTaskLink } from './commands/link.js'
 import { attachFile } from './commands/attach.js'
+import {
+  runTaskSyncDoctor,
+  runTaskSyncInit,
+  runTaskSyncPull,
+  runTaskSyncPush,
+  runTaskSyncStatus,
+} from './commands/task-sync.js'
 import { attachGet } from './commands/attach-get.js'
 import type { AttachGetOptions } from './commands/attach-get.js'
 import { listDocs, formatDocs, formatDocsMarkdown } from './commands/docs.js'
@@ -378,6 +402,11 @@ export function buildProgram(programName = basename(process.argv[1] ?? 'cup')): 
     return program.opts<{ profile?: string }>().profile
   }
 
+  // A lossy pull overwrites CUFM with ClickUp's flattened markdown, so always say which happened.
+  function fidelity(lossless: boolean): string {
+    return lossless ? ' (lossless)' : ' (lossy)'
+  }
+
   program
     .command('init')
     .description(
@@ -391,7 +420,7 @@ export function buildProgram(programName = basename(process.argv[1] ?? 'cup')): 
       }),
     )
 
-  program
+  const authCmd = program
     .command('auth')
     .description('Validate API token and show current user')
     .option('--json', 'Force JSON output even in terminal')
@@ -408,6 +437,93 @@ export function buildProgram(programName = basename(process.argv[1] ?? 'cup')): 
         }
       }),
     )
+
+  authCmd
+    .command('session [token]')
+    .description(
+      'Store the ClickUp session JWT used for lossless task-sync pulls and Synced Content',
+    )
+    .option('--status', 'Show where the session token comes from and when it expires')
+    .option('--clear', 'Remove the stored session token')
+    .option('--json', 'Force JSON output even in terminal')
+    .action(
+      wrapAction(
+        async (
+          token: string | undefined,
+          opts: { status?: boolean; clear?: boolean; json?: boolean },
+          // `auth` also declares --json, and commander binds a repeated flag to the parent.
+          command: Command,
+        ) => {
+          const profileName = getProfileName()
+          const json = shouldOutputJson(
+            Boolean(command.optsWithGlobals<{ json?: boolean }>().json ?? opts.json),
+          )
+
+          if (opts.clear) {
+            const removed = clearSessionToken(profileName)
+            if (json) {
+              console.log(JSON.stringify({ cleared: removed }, null, 2))
+            } else {
+              console.log(
+                removed ? 'Removed the stored session token.' : 'No stored session token.',
+              )
+            }
+            return
+          }
+
+          if (opts.status) {
+            printSessionStatus(profileName, json)
+            return
+          }
+
+          const supplied = token ?? (await readSessionTokenInput())
+          const trimmed = supplied.trim()
+          if (!trimmed) throw new Error(`No session token provided.\n${SESSION_TOKEN_HELP}`)
+          assertSessionTokenShape(trimmed)
+          const expiresAt = sessionTokenExpiry(trimmed)
+          if (expiresAt && expiresAt.getTime() <= Date.now()) {
+            throw new Error(
+              `That session token is already expired (${formatRelativeExpiry(expiresAt)}). Copy a fresh one.\n${SESSION_TOKEN_HELP}`,
+            )
+          }
+          saveSessionToken(trimmed, profileName)
+          printSessionStatus(profileName, json)
+        },
+      ),
+    )
+
+  function printSessionStatus(profileName: string | undefined, json: boolean): void {
+    const raw = loadRawConfig(profileName)
+    const resolved = resolveSessionToken(raw)
+    if (json) {
+      console.log(
+        JSON.stringify(
+          {
+            source: resolved?.source ?? null,
+            expiresAt: resolved?.expiresAt?.toISOString() ?? null,
+            expired: resolved?.expired ?? null,
+          },
+          null,
+          2,
+        ),
+      )
+      return
+    }
+    console.log(describeSessionToken(resolved, profileName))
+  }
+
+  // Piped stdin keeps the token out of shell history and argv; a terminal gets a masked prompt.
+  async function readSessionTokenInput(): Promise<string> {
+    if (!process.stdin.isTTY) {
+      let raw = ''
+      process.stdin.setEncoding('utf8')
+      for await (const chunk of process.stdin) raw += chunk as string
+      return raw
+    }
+    const { password } = await import('@inquirer/prompts')
+    console.error(SESSION_TOKEN_HELP)
+    return password({ message: 'Paste the ClickUp session JWT:', mask: true })
+  }
 
   program
     .command('tasks')
@@ -1375,6 +1491,233 @@ export function buildProgram(programName = basename(process.argv[1] ?? 'cup')): 
           console.log(`  ${result.url}`)
         }
       }),
+    )
+
+  const taskSyncCmd = program
+    .command('task-sync')
+    .description('Sync a local CUFM markdown file or directory of tasks/subtasks with ClickUp')
+
+  taskSyncCmd
+    .command('init <taskId> [file]')
+    .description('Pull a task (and subtasks if dest is a directory) into local markdown')
+    .option('--force', 'Overwrite an existing file without confirming')
+    .option('--dry-run', 'Show what would happen without writing')
+    .option('--no-input', 'Never prompt; fail on conflict')
+    .option('--session-token <token>', 'Optional ClickUp session JWT for lossless Quill pull')
+    .option('--lossy', "Accept ClickUp's flattened markdown when no session token is available")
+    .option('--json', 'Force JSON output even in terminal')
+    .action(
+      wrapAction(
+        async (
+          taskId: string,
+          file: string | undefined,
+          opts: {
+            force?: boolean
+            dryRun?: boolean
+            input?: boolean
+            lossy?: boolean
+            sessionToken?: string
+            json?: boolean
+          },
+        ) => {
+          const config = loadConfig(getProfileName())
+          const result = await runTaskSyncInit(config, taskId, file, {
+            ...opts,
+            noInput: opts.input === false,
+          })
+          if (shouldOutputJson(opts.json ?? false)) {
+            console.log(JSON.stringify(result, null, 2))
+          } else if ('children' in result) {
+            console.log(
+              `${result.root.action} ${result.root.file} <- ${result.root.taskId}${fidelity(result.root.lossless)}`,
+            )
+            for (const child of result.children) {
+              console.log(
+                `  ${child.action} ${child.file} <- ${child.taskId}${fidelity(child.lossless)}`,
+              )
+            }
+            for (const w of result.warnings) console.error(w)
+          } else {
+            console.log(
+              `${result.action} ${result.file} <- ${result.taskId}${fidelity(result.lossless)}`,
+            )
+          }
+        },
+      ),
+    )
+
+  taskSyncCmd
+    .command('push [file]')
+    .description('Push a CUFM file or directory of tasks/subtasks to ClickUp')
+    .option('--force', 'Overwrite a remotely-edited task without confirming')
+    .option('--dry-run', 'Show what would happen without writing')
+    .option('--no-input', 'Never prompt; fail on conflict')
+    .option('--list <listId>', 'List ID when creating a new task')
+    .option('--create', 'Create the task if clickup_id is missing')
+    .option('--title <name>', 'Override the task title')
+    .option('--mermaid-theme <name>', 'beautiful-mermaid theme (default github-light)')
+    .option('--session-token <token>', 'Optional ClickUp session JWT for Synced Content updates')
+    .option('--json', 'Force JSON output even in terminal')
+    .action(
+      wrapAction(
+        async (
+          file: string | undefined,
+          opts: {
+            force?: boolean
+            dryRun?: boolean
+            input?: boolean
+            list?: string
+            create?: boolean
+            title?: string
+            mermaidTheme?: string
+            sessionToken?: string
+            json?: boolean
+          },
+        ) => {
+          const config = loadConfig(getProfileName())
+          const result = await runTaskSyncPush(config, file, {
+            ...opts,
+            noInput: opts.input === false,
+          })
+          if (shouldOutputJson(opts.json ?? false)) {
+            console.log(JSON.stringify(result, null, 2))
+          } else if ('results' in result) {
+            for (const row of result.results) {
+              console.log(`${row.action} ${row.taskId}${row.url ? ` ${row.url}` : ''}`)
+              for (const w of row.warnings) console.error(w)
+            }
+            for (const w of result.warnings) console.error(w)
+          } else {
+            console.log(`${result.action} ${result.taskId}${result.url ? ` ${result.url}` : ''}`)
+            for (const w of result.warnings) console.error(w)
+          }
+        },
+      ),
+    )
+
+  taskSyncCmd
+    .command('pull [file]')
+    .description('Pull a CUFM file or directory of tasks/subtasks from ClickUp')
+    .option('--force', 'Overwrite a dirty local file without confirming')
+    .option('--dry-run', 'Show what would happen without writing')
+    .option('--no-input', 'Never prompt; fail on conflict')
+    .option('--session-token <token>', 'Optional ClickUp session JWT for lossless Quill pull')
+    .option('--lossy', "Accept ClickUp's flattened markdown when no session token is available")
+    .option('--json', 'Force JSON output even in terminal')
+    .action(
+      wrapAction(
+        async (
+          file: string | undefined,
+          opts: {
+            force?: boolean
+            dryRun?: boolean
+            input?: boolean
+            lossy?: boolean
+            sessionToken?: string
+            json?: boolean
+          },
+        ) => {
+          const config = loadConfig(getProfileName())
+          const result = await runTaskSyncPull(config, file, {
+            ...opts,
+            noInput: opts.input === false,
+          })
+          if (shouldOutputJson(opts.json ?? false)) {
+            console.log(JSON.stringify(result, null, 2))
+          } else if ('children' in result) {
+            console.log(
+              `${result.root.action} ${result.root.file} <- ${result.root.taskId}${fidelity(result.root.lossless)}`,
+            )
+            for (const child of result.children) {
+              console.log(
+                `  ${child.action} ${child.file} <- ${child.taskId}${fidelity(child.lossless)}`,
+              )
+            }
+            for (const w of result.warnings) console.error(w)
+          } else {
+            console.log(
+              `${result.action} ${result.file} <- ${result.taskId}${fidelity(result.lossless)}`,
+            )
+          }
+        },
+      ),
+    )
+
+  taskSyncCmd
+    .command('status [file]')
+    .description('Show local vs remote sync state')
+    .option('--json', 'Force JSON output even in terminal')
+    .action(
+      wrapAction(async (file: string | undefined, opts: { json?: boolean }) => {
+        const config = loadConfig(getProfileName())
+        const result = await runTaskSyncStatus(config, file)
+        if (shouldOutputJson(opts.json ?? false)) {
+          console.log(JSON.stringify(result, null, 2))
+        } else if (Array.isArray(result)) {
+          for (const row of result) {
+            console.log(
+              `${row.file}  task ${row.taskId ?? '(none)'}  localDirty=${row.localDirty} remoteNewer=${row.remoteNewer} gitDirty=${row.gitDirty}`,
+            )
+          }
+        } else {
+          console.log(
+            `${result.file}\n  task ${result.taskId ?? '(none)'}\n  localDirty=${result.localDirty} remoteNewer=${result.remoteNewer} gitDirty=${result.gitDirty}`,
+          )
+        }
+      }),
+    )
+
+  taskSyncCmd
+    .command('doctor')
+    .description('Create a CUFM torture-test task covering every known formatting token')
+    .option('--list <listId>', 'List to create the doctor task in')
+    .option('--task <taskId>', 'Overwrite this existing task instead of creating a new one')
+    .option('-o, --file <path>', 'Also write the generated CUFM markdown to this path')
+    .option('--delete', 'Delete the task after the report (default: keep for visual inspection)')
+    .option('--dry-run', 'Do not create a task')
+    .option('--session-token <token>', 'Optional ClickUp session JWT for lossless Quill audit')
+    .option('--mermaid-theme <name>', 'beautiful-mermaid theme (default github-light)')
+    .option('--json', 'Force JSON output even in terminal')
+    .action(
+      wrapAction(
+        async (opts: {
+          list?: string
+          task?: string
+          file?: string
+          delete?: boolean
+          dryRun?: boolean
+          sessionToken?: string
+          mermaidTheme?: string
+          json?: boolean
+        }) => {
+          if (!opts.list && !opts.task) {
+            throw new Error(
+              'Provide --list <listId> to create a task or --task <taskId> to overwrite one',
+            )
+          }
+          if (opts.list && opts.task) {
+            throw new Error('--list and --task are mutually exclusive')
+          }
+          const config = loadConfig(getProfileName())
+          const result = await runTaskSyncDoctor(config, {
+            list: opts.list,
+            task: opts.task,
+            file: opts.file,
+            deleteAfter: opts.delete,
+            dryRun: opts.dryRun,
+            sessionToken: opts.sessionToken,
+            mermaidTheme: opts.mermaidTheme,
+          })
+          if (shouldOutputJson(opts.json ?? false)) {
+            console.log(JSON.stringify(result, null, 2))
+          } else {
+            console.log(formatDoctorReport(result))
+          }
+          if (result.checks.some(c => !c.ok && !c.skipped)) {
+            process.exitCode = 1
+          }
+        },
+      ),
     )
 
   program
@@ -4045,25 +4388,29 @@ export function buildProgram(programName = basename(process.argv[1] ?? 'cup')): 
 
   program
     .command('skill')
-    .description('Install the agent skill file for your coding agents')
+    .description('Install the agent skill for your coding agents via npx skills add')
     .option('--print', 'Print the skill file content instead of installing')
-    .option('--path <path>', 'Install to a specific path')
+    .option('--path <path>', 'Copy SKILL.md and references/ to a specific path')
+    .option('-g, --global', 'Install globally (user-level) instead of project-level')
+    .option('-y, --yes', 'Skip confirmation prompts')
+    .option('--copy', 'Copy files instead of symlinking')
+    .option('--all', 'Install to all agents without prompts')
+    .option('-a, --agent <agents...>', 'Target specific agents')
+    .option('-l, --list', 'List the shipped skill without installing')
+    .allowUnknownOption()
+    .allowExcessArguments()
     .action(
-      wrapAction(async (opts: { print?: boolean; path?: string }) => {
+      wrapAction(async (opts: SkillInstallOptions, command: Command) => {
         if (opts.print) {
           process.stdout.write(printSkill())
           return
         }
         if (opts.path) {
           const dest = installSkillTo(opts.path)
-          console.log(`Installed to ${dest}`)
+          console.log(`Installed SKILL.md and references/ to ${dirname(dest)}`)
           return
         }
-        const installed = await installSkillInteractive()
-        console.log('')
-        for (const entry of installed) {
-          console.log(`  Installed: ${entry}`)
-        }
+        installSkillViaSkillsCli(opts, command.args)
       }),
     )
 
