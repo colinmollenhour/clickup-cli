@@ -38,16 +38,60 @@ describe('createTask', () => {
     expect(result.id).toBe('t_new')
   })
 
-  it('sends description as markdown_content', async () => {
+  it('sends description as compiled CUFM delta ops', async () => {
     const { createTask } = await import('../../../src/commands/create.js')
     await createTask(
       { apiToken: 'pk_t', teamId: 'tm_1' },
       { list: 'l1', name: 'Task', description: '# Heading\n\nSome **bold** text' },
     )
-    expect(mockCreateTask).toHaveBeenCalledWith('l1', {
-      name: 'Task',
-      markdown_content: '# Heading\n\nSome **bold** text',
-    })
+    const payload = mockCreateTask.mock.calls[0]?.[1] as { description?: { ops: unknown[] } }
+    expect(payload.description).toBeDefined()
+    expect(Array.isArray(payload.description?.ops)).toBe(true)
+    expect(payload.description?.ops).toEqual(
+      expect.arrayContaining([
+        { insert: 'Heading' },
+        expect.objectContaining({
+          insert: '\n',
+          attributes: expect.objectContaining({ header: 1 }),
+        }),
+        expect.objectContaining({
+          insert: 'bold',
+          attributes: expect.objectContaining({ bold: true }),
+        }),
+      ]),
+    )
+  })
+
+  it('falls back to markdown_content when ClickUp rejects native editor ops', async () => {
+    mockCreateTask
+      .mockRejectedValueOnce(new Error('ClickUp API error 400: Invalid description'))
+      .mockResolvedValueOnce({ id: 't_new', name: 'New task', url: 'http://cu/t_new' })
+    const errors: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation(msg => errors.push(String(msg)))
+    const { createTask } = await import('../../../src/commands/create.js')
+    await createTask(
+      { apiToken: 'pk_t', teamId: 'tm_1' },
+      { list: 'l1', name: 'Task', description: '# Heading\n' },
+    )
+    spy.mockRestore()
+    expect(mockCreateTask).toHaveBeenCalledTimes(2)
+    expect(mockCreateTask.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({ name: 'Task', markdown_content: '# Heading\n' }),
+    )
+    expect(mockCreateTask.mock.calls[1]?.[1]).not.toHaveProperty('description')
+    expect(errors.join('\n')).toMatch(/falling back to markdown_content/)
+  })
+
+  it('does not fall back when the API error is not a 400/422', async () => {
+    mockCreateTask.mockRejectedValueOnce(new Error('ClickUp API error 401: Token invalid'))
+    const { createTask } = await import('../../../src/commands/create.js')
+    await expect(
+      createTask(
+        { apiToken: 'pk_t', teamId: 'tm_1' },
+        { list: 'l1', name: 'Task', description: '# Heading\n' },
+      ),
+    ).rejects.toThrow(/401/)
+    expect(mockCreateTask).toHaveBeenCalledTimes(1)
   })
 
   it('creates a task with parent initiative', async () => {
