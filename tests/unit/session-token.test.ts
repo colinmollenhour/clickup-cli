@@ -3,6 +3,7 @@ import {
   assertSessionTokenShape,
   describeSessionToken,
   formatRelativeExpiry,
+  normalizeSessionToken,
   resolveSessionToken,
   sessionTokenExpiry,
 } from '../../src/session-token.js'
@@ -45,6 +46,32 @@ describe('resolveSessionToken', () => {
     expect(resolveSessionToken({}, future(), {})?.expired).toBe(false)
     expect(resolveSessionToken({}, 'opaque-token', {})).toMatchObject({ expired: false })
   })
+
+  it('strips a pasted Bearer prefix from every source', () => {
+    const token = future()
+    expect(resolveSessionToken({}, `Bearer ${token}`, {})).toMatchObject({
+      token,
+      source: 'flag',
+      expired: false,
+    })
+    expect(
+      resolveSessionToken({}, undefined, { CU_SESSION_TOKEN: `bearer  ${token}` })?.token,
+    ).toBe(token)
+    expect(
+      resolveSessionToken({ sessionToken: `Bearer Bearer ${token}` }, undefined, {})?.token,
+    ).toBe(token)
+    expect(resolveSessionToken({}, `Bearer ${past()}`, {})?.expired).toBe(true)
+  })
+})
+
+describe('normalizeSessionToken', () => {
+  it('removes one or more leading Bearer schemes and nothing else', () => {
+    expect(normalizeSessionToken('Bearer eyJ.a.b')).toBe('eyJ.a.b')
+    expect(normalizeSessionToken('  bearer   eyJ.a.b  ')).toBe('eyJ.a.b')
+    expect(normalizeSessionToken('Bearer Bearer eyJ.a.b')).toBe('eyJ.a.b')
+    expect(normalizeSessionToken('eyJ.Bearer.b')).toBe('eyJ.Bearer.b')
+    expect(normalizeSessionToken('Bearer')).toBe('Bearer')
+  })
 })
 
 describe('sessionTokenExpiry', () => {
@@ -60,11 +87,13 @@ describe('sessionTokenExpiry', () => {
 describe('assertSessionTokenShape', () => {
   it('rejects a personal API token with a pointer to the real thing', () => {
     expect(() => assertSessionTokenShape('pk_12345')).toThrow(/personal API token/)
+    expect(() => assertSessionTokenShape('Bearer pk_12345')).toThrow(/personal API token/)
   })
 
   it('rejects anything that is not a three-part JWT', () => {
     expect(() => assertSessionTokenShape('abc')).toThrow(/three dot-separated parts/)
     expect(() => assertSessionTokenShape(future())).not.toThrow()
+    expect(() => assertSessionTokenShape(`Bearer ${future()}`)).not.toThrow()
   })
 })
 

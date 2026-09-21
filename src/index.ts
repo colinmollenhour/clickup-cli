@@ -46,6 +46,7 @@ import {
   assertSessionTokenShape,
   describeSessionToken,
   formatRelativeExpiry,
+  normalizeSessionToken,
   resolveSessionToken,
   sessionTokenExpiry,
   SESSION_TOKEN_HELP,
@@ -477,7 +478,7 @@ export function buildProgram(programName = basename(process.argv[1] ?? 'cup')): 
           }
 
           const supplied = token ?? (await readSessionTokenInput())
-          const trimmed = supplied.trim()
+          const trimmed = normalizeSessionToken(supplied)
           if (!trimmed) throw new Error(`No session token provided.\n${SESSION_TOKEN_HELP}`)
           assertSessionTokenShape(trimmed)
           const expiresAt = sessionTokenExpiry(trimmed)

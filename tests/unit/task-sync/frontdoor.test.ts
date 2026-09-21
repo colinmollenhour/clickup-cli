@@ -148,6 +148,16 @@ describe('Synced Content frontdoor integration', () => {
     spy.mockRestore()
   })
 
+  it('strips a pasted Bearer prefix before the editor request adds its own', async () => {
+    const fetchMock = stubFrontdoorFetch({ task: { content: JSON.stringify({ ops: [] }) } })
+
+    await fetchTaskOps({ ...config, sessionToken: 'Bearer stored-jwt' }, 'task-1')
+    const editorCall = fetchMock.mock.calls.find(call => String(call[0]).includes('/task-v3/'))
+    expect(editorCall?.[1]).toMatchObject({
+      headers: expect.objectContaining({ authorization: 'Bearer stored-jwt' }),
+    })
+  })
+
   it('uses the stored session token when no flag or env var is set', async () => {
     const fetchMock = stubFrontdoorFetch({ task: { content: JSON.stringify({ ops: [] }) } })
 

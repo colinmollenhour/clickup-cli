@@ -102,7 +102,7 @@ Get one from the web app:
 
 1. Open `app.clickup.com` while logged in, then DevTools → **Network**.
 2. Click any task and pick any XHR to a `clickup.com` host.
-3. Copy the request header `authorization: Bearer eyJ…` — the token is everything after `Bearer `.
+3. Copy the request header `authorization: Bearer eyJ…` — the token is everything after `Bearer `. A leading `Bearer ` is removed if you paste the whole value.
 
 ```bash
 cup auth session                  # paste it at a masked prompt (or pipe it on stdin)

@@ -18,6 +18,18 @@ export const SESSION_TOKEN_HELP =
   'Get one from the ClickUp web app: DevTools > Network > any clickup.com request > ' +
   'request header `authorization: Bearer eyJ…` (copy everything after "Bearer "), then run: cup auth session'
 
+/**
+ * Drop a copied `Bearer ` scheme. The editor request adds it again, and
+ * `Authorization: Bearer Bearer eyJ…` is a 401 (`JWT_062`).
+ */
+export function normalizeSessionToken(raw: string): string {
+  let token = raw.trim()
+  while (/^bearer\s+/i.test(token)) {
+    token = token.replace(/^bearer\s+/i, '')
+  }
+  return token.trim()
+}
+
 /** Resolution order: explicit flag, then CU_SESSION_TOKEN, then the profile config. */
 export function resolveSessionToken(
   config: { sessionToken?: string } | undefined,
@@ -30,7 +42,8 @@ export function resolveSessionToken(
     ['config', config?.sessionToken],
   ]
   for (const [source, raw] of candidates) {
-    const token = raw?.trim()
+    if (raw === undefined) continue
+    const token = normalizeSessionToken(raw)
     if (!token) continue
     const expiresAt = sessionTokenExpiry(token)
     return {
@@ -61,12 +74,13 @@ export function sessionTokenExpiry(token: string): Date | undefined {
 
 /** Throws with actionable guidance when the value is clearly not a session JWT. */
 export function assertSessionTokenShape(token: string): void {
-  if (token.startsWith('pk_')) {
+  const normalized = normalizeSessionToken(token)
+  if (normalized.startsWith('pk_')) {
     throw new Error(
       `That is a personal API token, not a session JWT — ClickUp's editor endpoints reject pk_ tokens.\n${SESSION_TOKEN_HELP}`,
     )
   }
-  if (token.split('.').length !== 3) {
+  if (normalized.split('.').length !== 3) {
     throw new Error(
       `That does not look like a JWT (expected three dot-separated parts).\n${SESSION_TOKEN_HELP}`,
     )
