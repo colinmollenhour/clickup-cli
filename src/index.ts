@@ -50,6 +50,7 @@ import {
   resolveSessionToken,
   sessionTokenExpiry,
   SESSION_TOKEN_HELP,
+  SESSION_TOKEN_SNIPPET,
 } from './session-token.js'
 import { formatDoctorReport } from './task-sync/doctor.js'
 import {
@@ -446,12 +447,13 @@ export function buildProgram(programName = basename(process.argv[1] ?? 'cup')): 
     )
     .option('--status', 'Show where the session token comes from and when it expires')
     .option('--clear', 'Remove the stored session token')
+    .option('--snippet', 'Print the browser-console JavaScript that copies the session token')
     .option('--json', 'Force JSON output even in terminal')
     .action(
       wrapAction(
         async (
           token: string | undefined,
-          opts: { status?: boolean; clear?: boolean; json?: boolean },
+          opts: { status?: boolean; clear?: boolean; snippet?: boolean; json?: boolean },
           // `auth` also declares --json, and commander binds a repeated flag to the parent.
           command: Command,
         ) => {
@@ -459,6 +461,11 @@ export function buildProgram(programName = basename(process.argv[1] ?? 'cup')): 
           const json = shouldOutputJson(
             Boolean(command.optsWithGlobals<{ json?: boolean }>().json ?? opts.json),
           )
+
+          if (opts.snippet) {
+            process.stdout.write(SESSION_TOKEN_SNIPPET)
+            return
+          }
 
           if (opts.clear) {
             const removed = clearSessionToken(profileName)

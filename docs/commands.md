@@ -98,14 +98,18 @@ Images are uploaded as `cup-{sha1}.ext` and reused. Fenced ` ```mermaid ` and ` 
 
 ClickUp's public API cannot return a task description as the editor stores it. Three things therefore need the **session JWT** the web app uses: lossless `task-sync pull`, Synced Content updates on push, and doctor's stored-color audit. A personal `pk_` API token does not work for these — ClickUp rejects it (`JWT_008` / `JWT_062`).
 
-Get one from the web app:
+Get one from the web app. The app keeps its JWT in memory (not in storage or a cookie), so the reliable way is to watch for its next authenticated request:
 
-1. Open `app.clickup.com` while logged in, then DevTools → **Network**.
-2. Click any task and pick any XHR to a `clickup.com` host.
-3. Copy the request header `authorization: Bearer eyJ…` — the token is everything after `Bearer `. A leading `Bearer ` is removed if you paste the whole value.
+1. Run `cup auth session --snippet` and copy the JavaScript it prints.
+2. Open `app.clickup.com` while logged in, open DevTools → **Console**, and paste it (Chrome may ask you to type `allow pasting` first).
+3. Click any task or switch lists. The snippet copies the token from the `Authorization` header to your clipboard and prints only its expiry.
+4. Run `cup auth session` and paste. A leading `Bearer ` is removed if you paste the whole header value.
+
+The header is also visible under DevTools → **Network** → any `frontdoor-*` request, but exported HAR files drop it.
 
 ```bash
 cup auth session                  # paste it at a masked prompt (or pipe it on stdin)
+cup auth session --snippet        # print the browser-console JavaScript that copies the token
 cup auth session --status         # where the token comes from and when it expires
 cup auth session --clear          # forget it
 ```

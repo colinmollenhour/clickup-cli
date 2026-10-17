@@ -15,8 +15,47 @@ export interface ResolvedSessionToken {
 }
 
 export const SESSION_TOKEN_HELP =
-  'Get one from the ClickUp web app: DevTools > Network > any clickup.com request > ' +
-  'request header `authorization: Bearer eyJ…` (copy everything after "Bearer "), then run: cup auth session'
+  'Get one from the ClickUp web app: run `cup auth session --snippet`, paste the JavaScript it ' +
+  'prints into the DevTools Console on app.clickup.com, click any task, then run: cup auth session ' +
+  '(the token is also in DevTools > Network > a frontdoor request > `authorization: Bearer eyJ…`)'
+
+/**
+ * The web app keeps its JWT in memory, not in storage or a cookie, so the only reliable way
+ * to read it is to watch for the `Authorization` header on the app's next request. It copies
+ * the token to the clipboard and never prints it.
+ */
+export const SESSION_TOKEN_SNIPPET = String.raw`(() => {
+  const JWT = /eyJ[\w-]+\.[\w-]+\.[\w-]+/;
+  const xhrSet = XMLHttpRequest.prototype.setRequestHeader;
+  const origFetch = window.fetch;
+  const found = (via, value) => {
+    const m = String(value).match(JWT);
+    if (!m) return;
+    XMLHttpRequest.prototype.setRequestHeader = xhrSet;
+    window.fetch = origFetch;
+    copy(m[0]);
+    let exp = 'no exp claim';
+    try {
+      const p = JSON.parse(atob(m[0].split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      if (p.exp) exp = 'expires ' + new Date(p.exp * 1000).toLocaleString();
+    } catch {}
+    console.log('Session JWT copied to clipboard (via ' + via + '; ' + exp + '). Now run: cup auth session');
+  };
+  XMLHttpRequest.prototype.setRequestHeader = function (k, v) {
+    if (/^authorization$/i.test(k)) found('xhr', v);
+    return xhrSet.apply(this, arguments);
+  };
+  window.fetch = function (input, init) {
+    try {
+      const h = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined));
+      const a = h.get('authorization');
+      if (a) found('fetch', a);
+    } catch {}
+    return origFetch.apply(this, arguments);
+  };
+  console.log('Hooked. Click a task or switch lists in ClickUp to trigger a request.');
+})();
+`
 
 /**
  * Drop a copied `Bearer ` scheme. The editor request adds it again, and

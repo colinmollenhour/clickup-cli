@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import {
   assertSessionTokenShape,
@@ -5,6 +6,7 @@ import {
   formatRelativeExpiry,
   normalizeSessionToken,
   resolveSessionToken,
+  SESSION_TOKEN_SNIPPET,
   sessionTokenExpiry,
 } from '../../src/session-token.js'
 
@@ -113,5 +115,58 @@ describe('formatRelativeExpiry', () => {
     expect(formatRelativeExpiry(new Date('2026-08-21T03:30:00Z'), now)).toBe('expires in 3h 30m')
     expect(formatRelativeExpiry(new Date('2026-08-20T23:40:00Z'), now)).toBe('expired 20m ago')
     expect(formatRelativeExpiry(new Date('2026-08-23T02:00:00Z'), now)).toBe('expires in 2d 2h')
+  })
+})
+
+describe('SESSION_TOKEN_SNIPPET', () => {
+  function runSnippet() {
+    const copied: string[] = []
+    const logs: string[] = []
+    class FakeXhr {
+      headers: Array<[string, string]> = []
+      setRequestHeader(k: string, v: string) {
+        this.headers.push([k, v])
+      }
+    }
+    const fetchCalls: unknown[] = []
+    const fakeFetch = (...args: unknown[]) => {
+      fetchCalls.push(args)
+      return Promise.resolve()
+    }
+    const win = { fetch: fakeFetch }
+    runInNewContext(SESSION_TOKEN_SNIPPET, {
+      XMLHttpRequest: FakeXhr,
+      window: win,
+      Headers,
+      Request,
+      copy: (v: string) => copied.push(v),
+      console: { log: (m: string) => logs.push(m) },
+      atob,
+    })
+    return { FakeXhr, win, copied, logs, fakeFetch, fetchCalls }
+  }
+
+  it('copies the JWT from a fetch Authorization header, then unhooks', async () => {
+    const token = future()
+    const { win, copied, logs, fakeFetch, fetchCalls } = runSnippet()
+    expect(win.fetch).not.toBe(fakeFetch)
+    await win.fetch('https://x.clickup.com/a', { headers: { authorization: `Bearer ${token}` } })
+    expect(copied).toEqual([token])
+    expect(logs.join('\n')).toMatch(/expires/)
+    expect(logs.join('\n')).not.toContain(token)
+    expect(win.fetch).toBe(fakeFetch)
+    expect(fetchCalls).toHaveLength(1)
+  })
+
+  it('copies the JWT from an XHR Authorization header and ignores other headers', () => {
+    const token = future()
+    const { FakeXhr, win, copied, fakeFetch } = runSnippet()
+    const xhr = new FakeXhr()
+    xhr.setRequestHeader('x-csrf', '1')
+    expect(copied).toEqual([])
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    expect(copied).toEqual([token])
+    expect(xhr.headers).toHaveLength(2)
+    expect(win.fetch).toBe(fakeFetch)
   })
 })
