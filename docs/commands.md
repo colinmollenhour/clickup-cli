@@ -105,11 +105,22 @@ Get one from the web app. The app keeps its JWT in memory (not in storage or a c
 3. Click any task or switch lists. The snippet copies the token from the `Authorization` header to your clipboard and prints only its expiry.
 4. Run `cup auth session` and paste. A leading `Bearer ` is removed if you paste the whole header value.
 
+If you have a Chrome running with a debug port, the CLI can read the token for you instead:
+
+```bash
+cup auth session --cdp            # watch the logged-in app.clickup.com tab on http://127.0.0.1:9222
+cup auth session --cdp http://127.0.0.1:9333
+cup auth session --cdp --reload   # reload the tab to trigger the request (drops unsaved edits)
+```
+
+Start Chrome with `--remote-debugging-port=9222` and a dedicated `--user-data-dir` (recent Chrome ignores the port on the default profile), and log in to ClickUp there. Nothing is evaluated in the page: the CLI only listens for the first `Authorization` header sent to a `frontdoor-*.clickup.com` host, so without `--reload` you need to click a task or switch lists. The debug port gives full control of that browser, so keep it on loopback (or an SSH tunnel).
+
 The header is also visible under DevTools → **Network** → any `frontdoor-*` request, but exported HAR files drop it.
 
 ```bash
 cup auth session                  # paste it at a masked prompt (or pipe it on stdin)
 cup auth session --snippet        # print the browser-console JavaScript that copies the token
+cup auth session --cdp [url]      # read the token from a logged-in tab over the Chrome debug port
 cup auth session --status         # where the token comes from and when it expires
 cup auth session --clear          # forget it
 ```

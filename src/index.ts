@@ -42,6 +42,7 @@ import { fetchComments, printComments } from './commands/comments.js'
 import { fetchLists, printLists } from './commands/lists.js'
 import { formatTaskDetail } from './interactive.js'
 import { isTTY, shouldOutputJson } from './output.js'
+import { captureSessionTokenViaCdp, DEFAULT_CDP_URL } from './session-cdp.js'
 import {
   assertSessionTokenShape,
   describeSessionToken,
@@ -448,12 +449,27 @@ export function buildProgram(programName = basename(process.argv[1] ?? 'cup')): 
     .option('--status', 'Show where the session token comes from and when it expires')
     .option('--clear', 'Remove the stored session token')
     .option('--snippet', 'Print the browser-console JavaScript that copies the session token')
+    .option(
+      '--cdp [url]',
+      `Read the token from a logged-in ClickUp tab over the Chrome debug port (default ${DEFAULT_CDP_URL})`,
+    )
+    .option(
+      '--reload',
+      'With --cdp: reload the ClickUp tab to trigger a request (drops unsaved edits)',
+    )
     .option('--json', 'Force JSON output even in terminal')
     .action(
       wrapAction(
         async (
           token: string | undefined,
-          opts: { status?: boolean; clear?: boolean; snippet?: boolean; json?: boolean },
+          opts: {
+            status?: boolean
+            clear?: boolean
+            snippet?: boolean
+            cdp?: string | boolean
+            reload?: boolean
+            json?: boolean
+          },
           // `auth` also declares --json, and commander binds a repeated flag to the parent.
           command: Command,
         ) => {
@@ -484,7 +500,22 @@ export function buildProgram(programName = basename(process.argv[1] ?? 'cup')): 
             return
           }
 
-          const supplied = token ?? (await readSessionTokenInput())
+          if (opts.reload && opts.cdp === undefined) {
+            throw new Error('--reload only applies together with --cdp.')
+          }
+          if (opts.cdp !== undefined && token !== undefined) {
+            throw new Error('Pass either a token or --cdp, not both.')
+          }
+          const supplied =
+            opts.cdp !== undefined
+              ? await captureSessionTokenViaCdp({
+                  baseUrl: typeof opts.cdp === 'string' ? opts.cdp : DEFAULT_CDP_URL,
+                  reload: Boolean(opts.reload),
+                  onWaiting: message => {
+                    if (!json) console.error(message)
+                  },
+                })
+              : (token ?? (await readSessionTokenInput()))
           const trimmed = normalizeSessionToken(supplied)
           if (!trimmed) throw new Error(`No session token provided.\n${SESSION_TOKEN_HELP}`)
           assertSessionTokenShape(trimmed)

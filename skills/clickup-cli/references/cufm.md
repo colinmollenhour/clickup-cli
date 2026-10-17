@@ -187,7 +187,7 @@ Create the initial block in ClickUp, then pull with a session token (`cup auth s
 
 ## Session token and lossless pull
 
-`cup auth session` stores the ClickUp web session JWT (run `cup auth session --snippet`, paste the printed JavaScript into the DevTools Console on `app.clickup.com`, click a task; it copies the `Authorization` token to the clipboard). A leading `Bearer ` is removed if the whole header value is pasted. A `pk_` API token cannot be used — ClickUp's editor endpoints reject it. Without a valid session token `task-sync pull` can only fetch ClickUp's flattened markdown, so it refuses to overwrite a file containing CUFM unless you pass `--lossy`; pull output is labelled `(lossless)` or `(lossy)`.
+`cup auth session` stores the ClickUp web session JWT (run `cup auth session --snippet`, paste the printed JavaScript into the DevTools Console on `app.clickup.com`, click a task; it copies the `Authorization` token to the clipboard; or `cup auth session --cdp [url]` reads it from a logged-in tab on a Chrome debug port). A leading `Bearer ` is removed if the whole header value is pasted. A `pk_` API token cannot be used — ClickUp's editor endpoints reject it. Without a valid session token `task-sync pull` can only fetch ClickUp's flattened markdown, so it refuses to overwrite a file containing CUFM unless you pass `--lossy`; pull output is labelled `(lossless)` or `(lossy)`.
 
 ## Mermaid
 
